@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Audio Captioning</title>
+	<script src="https://cdn.tailwindcss.com"></script>
+</head>
+
+<body class="bg-gray-100 min-h-screen flex items-center justify-center p-4">
+	<div class="bg-white rounded-lg shadow-lg p-8 max-w-md w-full">
+		<h1 class="text-2xl font-bold text-center mb-6 text-gray-800">Audio Captioning</h1>
+
+		<form class="space-y-6">
+			<!-- File upload input -->
+			<div class="space-y-2">
+				<label for="fileUpload" class="block text-sm font-medium text-gray-700">Select an audio file</label>
+				<div class="flex items-center justify-center w-full">
+					<label for="fileUpload"
+						class="flex flex-col items-center justify-center w-full h-32 border-2 border-gray-300 border-dashed rounded-lg cursor-pointer bg-gray-50 hover:bg-gray-100">
+						<div class="flex flex-col items-center justify-center pt-5 pb-6">
+							<svg class="w-8 h-8 mb-3 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"
+								xmlns="http://www.w3.org/2000/svg">
+								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+									d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3">
+								</path>
+							</svg>
+							<p class="mb-2 text-sm text-gray-500"><span class="font-semibold">Click to select</span> or drag an audio
+								file</p>
+							<p class="text-xs text-gray-500">MP3 or MP4 audio files</p>
+						</div>
+						<input id="fileUpload" type="file" class="hidden" accept="audio/mp4,audio/mpeg" />
+					</label>
+				</div>
+				<p id="fileName" class="mt-1 text-sm text-gray-500"></p>
+			</div>
+
+			<!-- Action buttons -->
+			<div class="flex space-x-3">
+				<button type="button" id="startButton"
+					class="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition duration-150 ease-in-out">
+					Start Captioning
+				</button>
+
+				<button type="button" id="stopButton"
+					class="flex-1 bg-red-600 hover:bg-red-700 text-white font-medium py-2 px-4 rounded-md focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 transition duration-150 ease-in-out"
+					disabled>
+					Stop
+				</button>
+			</div>
+
+			<!-- Connection status -->
+			<div class="text-sm text-center" id="connectionStatus">
+				WebSocket: Not connected
+			</div>
+
+			<!-- Captions display area -->
+			<div class="space-y-2">
+				<label for="captionsDisplay" class="block text-sm font-medium text-gray-700">Captions</label>
+				<div id="captionsDisplay"
+					class="w-full h-60 px-3 py-2 overflow-y-auto text-gray-700 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-gray-50">
+					<p class="text-gray-400 italic">Captions will appear here...</p>
+				</div>
+			</div>
+
+			<!-- Log area -->
+			<div class="space-y-2">
+				<label for="logDisplay" class="block text-sm font-medium text-gray-700">Log</label>
+				<textarea id="logDisplay" rows="4"
+					class="w-full px-3 py-2 text-xs text-gray-700 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+					readonly></textarea>
+			</div>
+		</form>
+	</div>
+
+	<script>
+		// Variables
+		let websocket = null;
+		const chunkSize = 64 * 1024; // 64KB chunks
+		const connectionStatusElement = document.getElementById('connectionStatus');
+		const logDisplayElement = document.getElementById('logDisplay');
+		const captionsDisplayElement = document.getElementById('captionsDisplay');
+		const fileUploadElement = document.getElementById('fileUpload');
+		const fileNameElement = document.getElementById('fileName');
+		const startButtonElement = document.getElementById('startButton');
+		const stopButtonElement = document.getElementById('stopButton');
+
+		let isStreaming = false;
+		let fileToSend = null;
+
+		// Replace the existing WebSocket connection code with this improved version:
+
+		// Add these variables at the top of your script section
+		let reconnectAttempts = 0;
+		const maxReconnectAttempts = 5;
+		const reconnectDelay = 2000; // 2 seconds
+
+		function connectWebSocket() {
+			// Close existing connection if any
+			if (websocket && websocket.readyState === WebSocket.OPEN) {
+				websocket.close();
+			}
+
+			// Create a new WebSocket connection
+			websocket = new WebSocket('ws://localhost:3001/captions');
+
+			// WebSocket event handlers
+			websocket.onopen = function () {
+				reconnectAttempts = 0; // Reset reconnect attempts on successful connection
+				connectionStatusElement.textContent = 'WebSocket: Connected';
+				connectionStatusElement.classList.add('text-green-600');
+				connectionStatusElement.classList.remove('text-red-600');
+				logMessage('Connected to captioning service.');
+				startButtonElement.disabled = false;
+			};
+
+			websocket.onclose = function (event) {
+				connectionStatusElement.textContent = 'WebSocket: Disconnected';
+				connectionStatusElement.classList.add('text-red-600');
+				connectionStatusElement.classList.remove('text-green-600');
+				logMessage('Disconnected from captioning service.');
+				startButtonElement.disabled = true;
+				stopButtonElement.disabled = true;
+				isStreaming = false;
+
+				// Attempt to reconnect if not manually closed
+				if (!event.wasClean && reconnectAttempts < maxReconnectAttempts) {
+					reconnectAttempts++;
+					logMessage(`Attempting to reconnect (${reconnectAttempts}/${maxReconnectAttempts})...`);
+					setTimeout(connectWebSocket, reconnectDelay);
+				}
+			};
+
+			websocket.onerror = function (error) {
+				logMessage('WebSocket error occurred');
+				// Don't disable buttons here, let onclose handle the state
+			};
+
+			// Update the onmessage handler
+			websocket.onmessage = function (event) {
+				try {
+					const data = JSON.parse(event.data);
+
+					// Handle ping messages
+					if (data.type === 'ping') {
+						websocket.send(JSON.stringify({ type: 'pong' }));
+						return;
+					}
+
+					// Handle caption messages
+					if (data.type === 'caption') {
+						addCaption(data.text, data.confidence);
+						logMessage(`Caption received (conf: ${Math.round(data.confidence * 100)}%)`);
+					}
+					// Handle other message types
+					else {
+						if (data.type === 'connected' || data.type === 'ready') {
+							logMessage(data.message);
+						} else if (data.type === 'error') {
+							logMessage('Error: ' + data.message);
+						} else if (data.type === 'processingComplete') {
+							logMessage('Audio processing complete.');
+						} else if (data.type === 'captioningStopped') {
+							logMessage('Captioning stopped.');
+							stopButtonElement.disabled = true;
+							startButtonElement.disabled = false;
+						}
+					}
+				} catch (e) {
+					logMessage('Error parsing server message: ' + e.message);
+					console.error('Raw message:', event.data);
+				}
+			};
+		}
+
+		// Update the sendFileInChunks function
+		function sendFileInChunks(file) {
+			if (!websocket || websocket.readyState !== WebSocket.OPEN) {
+				logMessage('Error: WebSocket is not connected');
+				return;
+			}
+
+			logMessage(`Starting to send file in chunks of ${chunkSize / 1024}KB...`);
+
+			// First, send file metadata
+			const metadata = {
+				type: 'metadata',
+				fileName: file.name,
+				fileSize: file.size,
+				fileType: file.type
+			};
+			websocket.send(JSON.stringify(metadata));
+
+			// Clear old captions
+			captionsDisplayElement.innerHTML = '<p class="text-gray-400 italic">Waiting for captions...</p>';
+
+			// Then send the file in chunks
+			const fileReader = new FileReader();
+			let offset = 0;
+
+			fileReader.onload = function (e) {
+				if (websocket.readyState === WebSocket.OPEN && isStreaming) {
+					try {
+						websocket.send(e.target.result);
+						offset += e.target.result.byteLength;
+
+						// Progress update (don't log every chunk to avoid spamming)
+						if (offset % (512 * 1024) < chunkSize) {
+							const progress = Math.min(100, Math.round((offset / file.size) * 100));
+							logMessage(`Sent ${offset} of ${file.size} bytes (${progress}%)`);
+						}
+
+						// Continue with the next chunk if there's more data and we're still streaming
+						if (offset < file.size && isStreaming) {
+							readNextChunk();
+						} else if (offset >= file.size) {
+							// Send end-of-file message
+							websocket.send(JSON.stringify({ type: 'end' }));
+							logMessage('File transfer completed.');
+						}
+					} catch (error) {
+						logMessage('Error sending chunk: ' + error.message);
+						isStreaming = false;
+						startButtonElement.disabled = false;
+						stopButtonElement.disabled = true;
+					}
+				}
+			};
+
+			fileReader.onerror = function () {
+				logMessage('Error reading file');
+				isStreaming = false;
+				startButtonElement.disabled = false;
+				stopButtonElement.disabled = true;
+			};
+
+			function readNextChunk() {
+				const slice = file.slice(offset, offset + chunkSize);
+				fileReader.readAsArrayBuffer(slice);
+			}
+
+			// Start reading the first chunk
+			readNextChunk();
+		}
+
+		// Log messages to the log display
+		function logMessage(message) {
+			const timestamp = new Date().toISOString().slice(11, 19);
+			logDisplayElement.value += `[${timestamp}] ${message}\n`;
+			logDisplayElement.scrollTop = logDisplayElement.scrollHeight;
+		}
+
+		// Add a caption to the captions display
+		function addCaption(text, confidence) {
+			// Clear "captions will appear here" message if it exists
+			if (captionsDisplayElement.querySelector('.text-gray-400')) {
+				captionsDisplayElement.innerHTML = '';
+			}
+
+			// Create caption element
+			const captionElement = document.createElement('div');
+			captionElement.className = 'mb-2 p-2 bg-white rounded shadow-sm';
+
+			// Set caption content with confidence indicator
+			const confidenceClass = confidence > 0.9 ? 'bg-green-100' : (confidence > 0.8 ? 'bg-yellow-100' : 'bg-red-100');
+			captionElement.innerHTML = `
+                <div class="flex items-center">
+                    <div class="w-2 h-2 rounded-full ${confidenceClass} mr-2"></div>
+                    <p>${text}</p>
+                </div>
+            `;
+
+			// Add to display and scroll to bottom
+			captionsDisplayElement.appendChild(captionElement);
+			captionsDisplayElement.scrollTop = captionsDisplayElement.scrollHeight;
+		}
+
+		// Handle file selection
+		fileUploadElement.addEventListener('change', function (e) {
+			const file = e.target.files[0];
+			if (file) {
+				if (file.type !== 'audio/mp4' && file.type !== 'audio/mpeg') {
+					fileNameElement.textContent = 'Error: Please select an MP3 or MP4 audio file.';
+					fileNameElement.classList.add('text-red-600');
+					fileToSend = null;
+					return;
+				}
+
+				fileToSend = file;
+				fileNameElement.textContent = 'File: ' + file.name;
+				fileNameElement.classList.remove('text-red-600');
+				logMessage(`Selected file: ${file.name} (${Math.round(file.size / 1024)} KB)`);
+			} else {
+				fileNameElement.textContent = 'No file selected';
+				fileToSend = null;
+			}
+		});
+
+
+		// Stop button click handler
+		stopButtonElement.addEventListener('click', function () {
+			if (!isStreaming) return;
+
+			isStreaming = false;
+			logMessage('Stopping streaming...');
+
+			// Send stop message to server
+			if (websocket && websocket.readyState === WebSocket.OPEN) {
+				websocket.send(JSON.stringify({ type: 'stopCaptions' }));
+
+				// Reset buttons
+				startButtonElement.disabled = false;
+				stopButtonElement.disabled = true;
+
+			}
+		});
+
+		// Start button click handler
+		startButtonElement.addEventListener('click', function () {
+			if (isStreaming) return;
+
+			if (!fileToSend) {
+				const file = fileUploadElement.files[0];
+				if (!file) {
+					logMessage('Please select a file first.');
+					return;
+				}
+
+				if (file.type !== 'audio/mp4' && file.type !== 'audio/mpeg') {
+					logMessage('Error: Only MP3 or MP4 audio files are supported.');
+					return;
+				}
+
+				fileToSend = file;
+			}
+
+			// Connect to WebSocket if not already connected
+			if (!websocket || websocket.readyState !== WebSocket.OPEN) {
+				connectWebSocket();
+
+				// Wait for the connection to establish before sending
+				setTimeout(() => {
+					if (websocket && websocket.readyState === WebSocket.OPEN) {
+						isStreaming = true;
+						startButtonElement.disabled = true;
+						stopButtonElement.disabled = false;
+						sendFileInChunks(fileToSend);
+					} else {
+						logMessage('Failed to connect to WebSocket server. Please try again.');
+					}
+				}, 1000);
+			} else {
+				isStreaming = true;
+				startButtonElement.disabled = true;
+				stopButtonElement.disabled = false;
+				sendFileInChunks(fileToSend);
+			}
+		});
+
+		// Stop button click handler
+		stopButtonElement.addEventListener('click', function () {
+			if (!isStreaming) return;
+
+			isStreaming = false;
+			logMessage('Stopping streaming...');
+
+			// Send stop message to server
+			if (websocket && websocket.readyState === WebSocket.OPEN) {
+				websocket.send(JSON.stringify({ type: 'stopCaptions' }));
+			}
+
+			startButtonElement.disabled = false;
+			stopButtonElement.disabled = true;
+		});
+
+		// Try to connect to WebSocket when the page loads
+		document.addEventListener('DOMContentLoaded', function () {
+			logDisplayElement.value = '';
+			connectWebSocket();
+		});
+	</script>
+</body>
+
+</html>
