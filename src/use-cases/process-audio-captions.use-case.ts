@@ -1,6 +1,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import type { WebSocket } from 'ws'
+import { usageService } from '~/services/usage.service'
 import { generateCaption } from './generate-caption.use-case'
 
 const uploadsDir = path.join(import.meta.dirname, '../../../uploads')
@@ -31,6 +32,9 @@ export function processAudioCaptions(ws: WebSocket) {
 	// Caption generation settings
 	const minCaptionDelay = 1000 // 1 second
 	const maxCaptionDelay = 2000 // 2 seconds
+
+	// Assuming each audio packet represents 100ms of audio
+	const PACKET_DURATION_MS = 100
 
 	// Keep connection alive with ping-pong
 	const pingInterval = setInterval(() => {
@@ -149,6 +153,10 @@ export function processAudioCaptions(ws: WebSocket) {
 							fileType: data.fileType,
 						}
 
+						if (data.duration) {
+							usageService.trackUsage(data.duration)
+						}
+
 						// Create a unique filename to avoid overwriting
 						const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
 						const uniqueFileName = `${timestamp}-${fileMetadata.fileName}`
@@ -244,6 +252,8 @@ export function processAudioCaptions(ws: WebSocket) {
 				Buffer.isBuffer(message) ||
 				(message as Buffer) instanceof ArrayBuffer
 			) {
+				usageService.trackUsage(PACKET_DURATION_MS)
+
 				// If we haven't received metadata yet, we'll start captioning anyway
 				if (!captionInterval && isActive) {
 					startCaptionGeneration()
